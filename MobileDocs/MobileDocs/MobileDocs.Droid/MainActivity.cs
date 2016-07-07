@@ -7,29 +7,31 @@ using Android.Views;
 using Android.Widget;
 using Android.OS;
 using Android.Bluetooth;
-using Android.Bluetooth.LE;
+using Android.Media;
+using System.Diagnostics;
+using Java.Nio;
 
 namespace MobileDocs.Droid
 {
 	[Activity (Label = "MobileDocs.Droid", MainLauncher = true, Icon = "@drawable/icon")]
 	public class MainActivity : Activity,
-        BluetoothAdapter.ILeScanCallback
-	{
+        WebService.OnDataReceived
+    {
 		int count = 1;
-
-        BluetoothAdapter mBluetoothAdapter;
-        static BluetoothGatt mBluetoothGatt;
-        static BluetoothGattCharacteristic mCharacteristic;
-        static BluetoothGattDescriptor mNotificationDescriptor;
-
-        static bool isReceivingNotifications = false;
-
+        
         static TextView mText;
+        static EditText mPort;
 
+        static Context mContext;
+
+        static AudioTrack mAudioTrack;
+        static MediaPlayer mPlayer = null;
+        private MediaCodec decoder;
+        
         protected override void OnCreate (Bundle bundle)
 		{
 			base.OnCreate (bundle);
-
+            mContext = this;
 			// Set our view from the "main" layout resource
 			SetContentView (Resource.Layout.Main);
 
@@ -39,132 +41,135 @@ namespace MobileDocs.Droid
 			
 			button.Click += delegate {
 				button.Text = string.Format ("{0} clicks!", count++);
-                if (mNotificationDescriptor != null && mBluetoothGatt != null)
-                {
-                    if (isReceivingNotifications)
-                    {
-                        mNotificationDescriptor.SetValue(new byte[] { 0, 0 });
-                    } else
-                    {
-                        mNotificationDescriptor.SetValue(new byte[] { 0, 1 });
-                    }
-                    if (mBluetoothGatt.WriteDescriptor(mNotificationDescriptor))
-                    {
-                        isReceivingNotifications = !isReceivingNotifications;
-                    }
-                    Console.WriteLine("notifications " + isReceivingNotifications);
-                } 
-			};
+                //mText.Text = bytesReceived.ToString();
+                //if (mNotificationDescriptor != null && mBluetoothGatt != null)
+                //{
+                //    if (isReceivingNotifications)
+                //    {
+                //        mNotificationDescriptor.SetValue(new byte[] { 0, 0 });
+                //    }
+                //    else
+                //    {
+                //        mNotificationDescriptor.SetValue(new byte[] { 0, 1 });
+                //    }
+                //    if (mBluetoothGatt.WriteDescriptor(mNotificationDescriptor))
+                //    {
+                //        isReceivingNotifications = !isReceivingNotifications;
+                //    }
+                //    Console.WriteLine("notifications " + isReceivingNotifications);
+                //}
+                //new WiFiDirectService(this);
+            };
+
+            FindViewById<Button>(Resource.Id.toggle).Click += delegate
+            {
+                //if (mAudioTrack != null)
+                //{
+                //    TogglePlayingState();
+                //}
+
+                //try
+                //{
+                //    Java.IO.OutputStreamWriter outputStreamWriter = new Java.IO.OutputStreamWriter(OpenFileOutput("config.txt", FileCreationMode.WorldReadable));
+                //    outputStreamWriter.Write(bytesString);
+                //    outputStreamWriter.Close();
+                //}
+                //catch (Java.IO.IOException e)
+                //{
+                //    Console.WriteLine("File write failed: " + e.ToString());
+                //}
+                //Console.WriteLine(bytesString);
+            };
 
             mText = FindViewById<TextView>(Resource.Id.text);
+            mPort = FindViewById<EditText>(Resource.Id.port);
 
-            BluetoothManager bluetoothManager = (BluetoothManager)GetSystemService(Context.BluetoothService);
-            mBluetoothAdapter = bluetoothManager.Adapter;
+            new BluetoothService((BluetoothManager)GetSystemService(Context.BluetoothService), this);       
 
-            if (mBluetoothAdapter == null || !mBluetoothAdapter.IsEnabled)
-            {
-                Intent enableBtIntent = new Intent(BluetoothAdapter.ActionRequestEnable);
-                StartActivityForResult(enableBtIntent, 1);
-            }
-            else
-            {
-                mBluetoothAdapter.StartLeScan(this);
-            }
+            mAudioTrack = new AudioTrack(Stream.Music, 44100, ChannelOut.Stereo, Encoding.Pcm16bit, 100000, AudioTrackMode.Stream);
 
+            decoder = MediaCodec.CreateDecoderByType("audio/mp4a-latm");
+            MediaFormat format = new MediaFormat();
+            format.SetString(MediaFormat.KeyMime, "audio/mp4a-latm");
+            format.SetInteger(MediaFormat.KeyChannelCount, 1);
+            format.SetInteger(MediaFormat.KeySampleRate, 44100);
+            format.SetInteger(MediaFormat.KeyBitRate, 64 * 1024);//AAC-HE 64kbps
+            format.SetInteger(MediaFormat.KeyAacProfile, (int) Android.Media.MediaCodecProfileType.Aacobjecthe);
+
+            decoder.Configure(format, null, null, 0);
+
+            decoder.Start();
+            mAudioTrack.Play();
+
+            mPlayer = new MediaPlayer();
         }
 
-
-        public void OnLeScan(BluetoothDevice device, int rssi, byte[] scanRecord)
+        public void OnReceived(byte[] data)
         {
-            //mText.Text += device.GetUuids().ToString() + "\n";
-            mBluetoothGatt = device.ConnectGatt(this, true, new GattCallback());
+            mAudioTrack.Write(data, 1, data.Length - 1);
         }
 
-        private class GattCallback : BluetoothGattCallback
+        public void TogglePlayingState()
         {
-            public override void OnConnectionStateChange(BluetoothGatt gatt, [GeneratedEnum] GattStatus status, [GeneratedEnum] ProfileState newState)
+            //Console.WriteLine(mAudioTrack.PlayState);
+            if (mAudioTrack.PlayState == PlayState.Playing)
             {
-                Console.WriteLine("status " + status);
-                mBluetoothGatt.DiscoverServices();
-                
+                mAudioTrack.Pause();
+            }
+            else if (mAudioTrack.PlayState == PlayState.Paused)
+            {
+                mAudioTrack.Play();
+            }
+            Console.WriteLine("toggled");
+            //mText.Text = mAudioTrack.PlayState.ToString();
+        }
+
+        private void DecodePCMtoAAC(byte[] data)
+        {
+            ByteBuffer[] inputBuffers;
+            ByteBuffer[] outputBuffers;
+
+            ByteBuffer inputBuffer;
+            ByteBuffer outputBuffer;
+
+            MediaCodec.BufferInfo bufferInfo;
+            int inputBufferIndex;
+            int outputBufferIndex;
+            byte[] outData;
+
+            inputBuffers = decoder.GetInputBuffers();
+            outputBuffers = decoder.GetOutputBuffers();
+            inputBufferIndex = decoder.DequeueInputBuffer(-1);
+            if (inputBufferIndex >= 0)
+            {
+                inputBuffer = inputBuffers[inputBufferIndex];
+                inputBuffer.Clear();
+
+                inputBuffer.Put(data);
+
+                decoder.QueueInputBuffer(inputBufferIndex, 0, data.Length, 0, 0);
             }
 
-            public override void OnCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, [GeneratedEnum] GattStatus status)
+            bufferInfo = new MediaCodec.BufferInfo();
+            outputBufferIndex = decoder.DequeueOutputBuffer(bufferInfo, 0);
+
+            while (outputBufferIndex >= 0)
             {
-                byte[] characteristicValue = characteristic.GetValue();
-                if (characteristicValue != null && characteristicValue.Length > 0)
-                {
-                    Console.WriteLine("cvalue " + BitConverter.ToString(characteristicValue));
-                }
+                outputBuffer = outputBuffers[outputBufferIndex];
 
-                Console.WriteLine("enable notification " + mBluetoothGatt.SetCharacteristicNotification(characteristic, true));
+                outputBuffer.Position(bufferInfo.Offset);
+                outputBuffer.Limit(bufferInfo.Offset + bufferInfo.Size);
 
-                foreach (var descriptor in characteristic.Descriptors)
-                {
-                    Console.WriteLine("descriptor " + descriptor.Uuid.ToString());
-                    //if (descriptor.Uuid.ToString().Equals("00001234-0000-1000-8000-00805f9b34fb"))
-                    //{
-                    //    Console.WriteLine("read descriptor " + mBluetoothGatt.ReadDescriptor(descriptor));
-                    //}
-                    if (descriptor.Uuid.ToString().Equals("00002902-0000-1000-8000-00805f9b34fb"))
-                    {
-                        mNotificationDescriptor = descriptor;
-                        //Console.WriteLine("read descriptor " + mBluetoothGatt.ReadDescriptor(descriptor));
-                        descriptor.SetValue(new byte[] { 0, 1});
-                        isReceivingNotifications = mBluetoothGatt.WriteDescriptor(descriptor);
-                        Console.WriteLine("descriptor write " + isReceivingNotifications);
-                    }
-                }
-            }
+                outData = new byte[bufferInfo.Size];
+                outputBuffer.Get(outData);
 
-            public override void OnDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, [GeneratedEnum] GattStatus status)
-            {
-                Console.WriteLine("descriptor " + descriptor.Uuid.ToString());
-                if (descriptor.Uuid.ToString().Equals("00001234-0000-1000-8000-00805f9b34fb"))
-                {
-                    byte[] descriptorValue = descriptor.GetValue();
-                    if (descriptorValue != null && descriptorValue.Length > 0)
-                    {
-                        Console.WriteLine("value " + BitConverter.ToString(descriptorValue));
-                    }
-                }
-            }
+                //  Log.d("AudioDecoder", outData.length + " bytes decoded");
 
-            public override void OnDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, [GeneratedEnum] GattStatus status)
-            {
-                Console.WriteLine("descriptor write " + descriptor.Uuid.ToString() + " " + status);
-                byte[] descriptorValue = descriptor.GetValue();
-                if (descriptorValue != null && descriptorValue.Length > 0)
-                {
-                    Console.WriteLine("value " + BitConverter.ToString(descriptorValue));
-                }
-            }
+                mAudioTrack.Write(outData, 0, outData.Length);
 
-            public override void OnCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic)
-            {
-                Console.WriteLine("characteristic changed " + characteristic.Uuid.ToString());
-                byte[] characteristicValue = characteristic.GetValue();
-                if (characteristicValue != null && characteristicValue.Length > 0)
-                {
-                    Console.WriteLine("cvalue " + BitConverter.ToString(characteristicValue));
-                }
-            }
+                decoder.ReleaseOutputBuffer(outputBufferIndex, false);
+                outputBufferIndex = decoder.DequeueOutputBuffer(bufferInfo, 0);
 
-            public override void OnServicesDiscovered(BluetoothGatt gatt, [GeneratedEnum] GattStatus status)
-            {
-                Console.WriteLine("service " + status);
-                foreach(var service in gatt.Services)
-                {
-                    Console.WriteLine("service " + service.Uuid.ToString());
-                    foreach(var characteristic in service.Characteristics)
-                    {
-                        Console.WriteLine("characterstic " + characteristic.Uuid.ToString());
-                        if (characteristic.Uuid.ToString().Equals("00000000-0000-1000-8000-00805f9b34fb"))
-                        {
-                            mBluetoothGatt.ReadCharacteristic(characteristic);
-                        }                        
-                    }
-                }
             }
         }
     }
